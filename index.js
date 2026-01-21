@@ -37,6 +37,7 @@ const client = new Client({
 });
 
 const OWNER_ID = '1225647692458229860'; // <--- SEU ID
+const LOG_CHANNEL_ID = ''; // <--- COLOQUE O ID DO CANAL DE LOGS SE QUISER
 
 // Definição dos Slash Commands
 const commands = [
@@ -60,24 +61,21 @@ const commands = [
         .setDescription('🛠️ Abre a central de ferramentas VIP.'),
 
     new SlashCommandBuilder()
-        .setName('setup')
-        .setDescription('⚙️ Configurações iniciais do bot.'),
+        .setName('status')
+        .setDescription('📡 Verifica o status do bot e latência.'),
 ].map(command => command.toJSON());
 
 client.once('ready', async () => {
     console.log(`🚀 Bot Multi-Tools logado como ${client.user.tag}!`);
     
-    // Registrar Slash Commands
     const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
     try {
-        console.log('Iniciando atualização dos comandos (/)');
         await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-        console.log('Comandos (/) registrados com sucesso!');
+        console.log('Comandos (/) registrados!');
     } catch (error) {
         console.error(error);
     }
 
-    // Verificação de expiração
     setInterval(async () => {
         const allVips = await db.get("vips") || {};
         const now = Date.now();
@@ -86,20 +84,43 @@ client.once('ready', async () => {
             if (allVips[userId].expiresAt !== -1 && now > allVips[userId].expiresAt) {
                 delete allVips[userId];
                 changed = true;
-                console.log(`VIP de ${userId} expirou.`);
             }
         }
         if (changed) await db.set("vips", allVips);
     }, 3600000);
 });
 
+async function sendLog(title, description, color = '#5865F2') {
+    if (!LOG_CHANNEL_ID) return;
+    const channel = client.channels.cache.get(LOG_CHANNEL_ID);
+    if (channel) {
+        const embed = new EmbedBuilder()
+            .setTitle(title)
+            .setDescription(description)
+            .setColor(color)
+            .setTimestamp();
+        channel.send({ embeds: [embed] }).catch(() => {});
+    }
+}
+
 client.on('interactionCreate', async (interaction) => {
     if (interaction.isChatInputCommand()) {
         const { commandName, user, options } = interaction;
 
-        // Verificação de Dono para comandos administrativos
         if (['addvip', 'delvip', 'painel'].includes(commandName) && user.id !== OWNER_ID) {
-            return interaction.reply({ content: '❌ Apenas o dono do bot pode usar este comando.', ephemeral: true });
+            return interaction.reply({ content: '❌ Acesso negado.', ephemeral: true });
+        }
+
+        if (commandName === 'status') {
+            const embed = new EmbedBuilder()
+                .setTitle('📡 Status do Sistema')
+                .addFields(
+                    { name: 'Ping Bot', value: `\`${client.ws.ping}ms\``, inline: true },
+                    { name: 'Uptime', value: `<t:${Math.floor(client.readyTimestamp / 1000)}:R>`, inline: true },
+                    { name: 'Servidores', value: `\`${client.guilds.cache.size}\``, inline: true }
+                )
+                .setColor('#00FF00');
+            return interaction.reply({ embeds: [embed], ephemeral: true });
         }
 
         if (commandName === 'addvip') {
@@ -114,62 +135,60 @@ client.on('interactionCreate', async (interaction) => {
                 expiresAt: expiresAt
             });
 
-            const timeMsg = days === 0 ? "Permanente" : `${days} dias`;
-            return interaction.reply({ content: `✅ **${targetUser.tag}** agora é VIP!\n⏳ **Duração:** ${timeMsg}`, ephemeral: false });
+            sendLog('👑 Novo VIP Adicionado', `**Usuário:** ${targetUser.tag}\n**Duração:** ${days === 0 ? 'Permanente' : days + ' dias'}\n**Por:** ${user.tag}`, '#00FF00');
+            return interaction.reply({ content: `✅ **${targetUser.tag}** agora é VIP!`, ephemeral: false });
         }
 
         if (commandName === 'delvip') {
             const targetUser = options.getUser('usuario');
             await db.delete(`vips.${targetUser.id}`);
+            sendLog('❌ VIP Removido', `**Usuário:** ${targetUser.tag}\n**Por:** ${user.tag}`, '#FF0000');
             return interaction.reply({ content: `✅ VIP de **${targetUser.tag}** removido.`, ephemeral: true });
         }
 
         if (commandName === 'painel') {
             const allVips = await db.get("vips") || {};
             const vipsList = Object.values(allVips);
-
             const embed = new EmbedBuilder()
                 .setTitle('📊 Gestão de Clientes VIP')
-                .setDescription('Aqui estão os usuários que possuem acesso às ferramentas.')
                 .setColor('#5865F2')
                 .setThumbnail(client.user.displayAvatarURL());
 
             if (vipsList.length === 0) {
-                embed.addFields({ name: 'Clientes', value: 'Nenhum cliente ativo.' });
+                embed.setDescription('Nenhum cliente ativo.');
             } else {
-                let list = vipsList.map((v, i) => `**${i+1}.** \`${v.tag}\` - Expira: ${v.expiresAt === -1 ? '♾️' : `<t:${Math.floor(v.expiresAt/1000)}:R>`}`).join('\n');
+                let list = vipsList.map((v, i) => `**${i+1}.** \`${v.tag}\` - ${v.expiresAt === -1 ? '♾️' : `<t:${Math.floor(v.expiresAt/1000)}:R>`}`).join('\n');
                 embed.setDescription(`**Total:** ${vipsList.length} clientes\n\n${list}`);
             }
             return interaction.reply({ embeds: [embed], ephemeral: true });
         }
 
-        if (commandName === 'tools' || commandName === 'setup') {
+        if (commandName === 'tools') {
             const isVip = await db.get(`vips.${user.id}`);
             if (!isVip && user.id !== OWNER_ID) {
-                return interaction.reply({ content: '❌ Você não possui uma assinatura VIP ativa.', ephemeral: true });
+                return interaction.reply({ content: '❌ Você não possui VIP.', ephemeral: true });
             }
 
             const embed = new EmbedBuilder()
                 .setTitle('🛠️ Central de Ferramentas VIP')
-                .setDescription('Bem-vindo à sua central exclusiva. Escolha uma ferramenta abaixo para começar.')
+                .setDescription('Escolha uma ferramenta abaixo para começar.')
                 .addFields(
-                    { name: '📂 Clonagem Profissional', value: 'Replique servidores inteiros com precisão.', inline: false },
-                    { name: '🧹 Limpeza de DM', value: 'Remova suas mensagens de conversas privadas.', inline: true },
-                    { name: '🚀 Funções Extras', value: 'Auto-Nick e Mensagens em Massa.', inline: true }
+                    { name: '📂 Clonagem', value: 'Replique servidores.', inline: true },
+                    { name: '🧹 Limpeza', value: 'Limpeza de DM.', inline: true },
+                    { name: '🚀 Extras', value: 'Auto-Nick e DM All.', inline: true }
                 )
-                .setColor('#2F3136')
-                .setFooter({ text: 'Bot Toast VIP • Qualidade e Segurança' });
+                .setColor('#2F3136');
 
             const rowSelect = new ActionRowBuilder().addComponents(
                 new StringSelectMenuBuilder()
                     .setCustomId('select_tool')
-                    .setPlaceholder('Selecione a ferramenta desejada...')
+                    .setPlaceholder('Selecione...')
                     .addOptions([
-                        { label: 'Clonar (Via Conta)', description: 'Clona usando seu Token pessoal.', value: 'tool_clone_self', emoji: '👤' },
-                        { label: 'Clonar (Via Bot)', description: 'Clona usando as permissões do Bot.', value: 'tool_clone_bot', emoji: '🤖' },
-                        { label: 'Limpar Mensagens DM', description: 'Apaga suas mensagens em uma DM.', value: 'tool_clear_dm', emoji: '🧹' },
-                        { label: 'Auto-Nick', description: 'Altera o apelido de todos no servidor.', value: 'tool_autonick', emoji: '🏷️' },
-                        { label: 'DM All', description: 'Envia mensagem para todos os membros.', value: 'tool_dmall', emoji: '📢' },
+                        { label: 'Clonar (Via Conta)', value: 'tool_clone_self', emoji: '👤' },
+                        { label: 'Clonar (Via Bot)', value: 'tool_clone_bot', emoji: '🤖' },
+                        { label: 'Limpar Mensagens DM', value: 'tool_clear_dm', emoji: '🧹' },
+                        { label: 'Auto-Nick', value: 'tool_autonick', emoji: '🏷️' },
+                        { label: 'DM All', value: 'tool_dmall', emoji: '📢' },
                     ]),
             );
 
@@ -177,11 +196,9 @@ client.on('interactionCreate', async (interaction) => {
         }
     }
 
-    // Lógica de Menus e Modais (Mantida e Melhorada)
     if (interaction.isStringSelectMenu()) {
         if (interaction.customId === 'select_tool') {
             const tool = interaction.values[0];
-            
             if (tool.startsWith('tool_clone')) {
                 const modal = new ModalBuilder().setCustomId(tool === 'tool_clone_self' ? 'modal_clone_self' : 'modal_clone_bot').setTitle('Configurar Clonagem');
                 const rows = [
@@ -200,11 +217,11 @@ client.on('interactionCreate', async (interaction) => {
                 await interaction.showModal(modal);
             } else if (tool === 'tool_autonick') {
                 const modal = new ModalBuilder().setCustomId('modal_autonick').setTitle('Auto-Nick VIP');
-                modal.addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('nickname').setLabel('Novo Apelido para Todos').setStyle(TextInputStyle.Short).setRequired(true)));
+                modal.addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('nickname').setLabel('Novo Apelido').setStyle(TextInputStyle.Short).setRequired(true)));
                 await interaction.showModal(modal);
             } else if (tool === 'tool_dmall') {
                 const modal = new ModalBuilder().setCustomId('modal_dmall').setTitle('DM All VIP');
-                modal.addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('message').setLabel('Mensagem para enviar').setStyle(TextInputStyle.Paragraph).setRequired(true)));
+                modal.addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('message').setLabel('Mensagem').setStyle(TextInputStyle.Paragraph).setRequired(true)));
                 await interaction.showModal(modal);
             }
         }
@@ -217,27 +234,30 @@ client.on('interactionCreate', async (interaction) => {
             const targetId = interaction.fields.getTextInputValue('target');
             const token = interaction.customId === 'modal_clone_self' ? interaction.fields.getTextInputValue('token') : null;
             
-            await interaction.reply({ content: '🔍 Analisando servidores... Isso pode levar alguns segundos.', ephemeral: true });
+            await interaction.reply({ content: '🔍 Analisando servidores...', ephemeral: true });
             
             try {
                 let sourceName, targetName;
                 if (token) {
-                    const self = new SelfClient();
+                    const self = new SelfClient({ checkUpdate: false });
                     await self.login(token);
-                    sourceName = self.guilds.cache.get(sourceId)?.name;
+                    const sourceGuild = await self.guilds.fetch(sourceId).catch(() => null);
+                    sourceName = sourceGuild?.name;
                     self.destroy();
                 } else {
-                    sourceName = client.guilds.cache.get(sourceId)?.name;
+                    const sourceGuild = await client.guilds.fetch(sourceId).catch(() => null);
+                    sourceName = sourceGuild?.name;
                 }
-                targetName = client.guilds.cache.get(targetId)?.name;
+                const targetGuild = await client.guilds.fetch(targetId).catch(() => null);
+                targetName = targetGuild?.name;
 
-                if (!sourceName || !targetName) return interaction.followUp({ content: '❌ Servidor não encontrado. Verifique se o bot/conta está neles.', ephemeral: true });
+                if (!sourceName || !targetName) return interaction.followUp({ content: '❌ Servidor não encontrado.', ephemeral: true });
 
                 globalCloneData[`key_${userId}`] = { sourceId, targetId, token, selections: {} };
 
                 const embed = new EmbedBuilder()
                     .setTitle('⚙️ Personalizar Clonagem')
-                    .setDescription(`**Origem:** ${sourceName}\n**Destino:** ${targetName}\n\nSelecione o que deseja copiar:`)
+                    .setDescription(`**Origem:** ${sourceName}\n**Destino:** ${targetName}`)
                     .setColor('#5865F2');
 
                 const row1 = new ActionRowBuilder().addComponents(
@@ -253,31 +273,31 @@ client.on('interactionCreate', async (interaction) => {
 
                 await interaction.followUp({ embeds: [embed], components: [row1, row2], ephemeral: true });
             } catch (e) { 
-                await interaction.followUp({ content: '❌ Erro ao conectar. Verifique o Token ou IDs.', ephemeral: true }); 
+                await interaction.followUp({ content: '❌ Erro de conexão.', ephemeral: true }); 
             }
         }
 
         if (interaction.customId === 'modal_autonick') {
             const nick = interaction.fields.getTextInputValue('nickname');
-            await interaction.reply({ content: `🏷️ Alterando apelidos para: **${nick}**...`, ephemeral: true });
+            await interaction.reply({ content: `🏷️ Alterando apelidos...`, ephemeral: true });
             const members = await interaction.guild.members.fetch();
             let count = 0;
             for (const member of members.values()) {
                 try { if (member.manageable) { await member.setNickname(nick); count++; } } catch (e) {}
             }
-            await interaction.followUp({ content: `✅ Apelido alterado em ${count} membros!`, ephemeral: true });
+            await interaction.followUp({ content: `✅ Alterado em ${count} membros!`, ephemeral: true });
         }
 
         if (interaction.customId === 'modal_dmall') {
             const msg = interaction.fields.getTextInputValue('message');
-            await interaction.reply({ content: '📢 Enviando mensagens... Isso pode demorar para evitar bloqueios.', ephemeral: true });
+            await interaction.reply({ content: '📢 Enviando mensagens...', ephemeral: true });
             const members = await interaction.guild.members.fetch();
             let count = 0;
             for (const member of members.values()) {
                 if (member.user.bot) continue;
-                try { await member.send(msg); count++; await new Promise(r => setTimeout(r, 1000)); } catch (e) {}
+                try { await member.send(msg); count++; await new Promise(r => setTimeout(r, 1500)); } catch (e) {}
             }
-            await interaction.followUp({ content: `✅ Mensagem enviada para ${count} membros!`, ephemeral: true });
+            await interaction.followUp({ content: `✅ Enviado para ${count} membros!`, ephemeral: true });
         }
     }
 
@@ -289,13 +309,10 @@ client.on('interactionCreate', async (interaction) => {
             if (!data) return interaction.reply({ content: '❌ Sessão expirada.', ephemeral: true });
             const option = interaction.customId.replace('opt_', '');
             data.selections[option] = !data.selections[option];
-            
             const rows = interaction.message.components.map(row => {
                 const newRow = ActionRowBuilder.from(row);
                 newRow.components.forEach(button => {
-                    if (button.data.custom_id === interaction.customId) {
-                        button.setStyle(data.selections[option] ? ButtonStyle.Primary : ButtonStyle.Secondary);
-                    }
+                    if (button.data.custom_id === interaction.customId) button.setStyle(data.selections[option] ? ButtonStyle.Primary : ButtonStyle.Secondary);
                 });
                 return newRow;
             });
@@ -304,13 +321,13 @@ client.on('interactionCreate', async (interaction) => {
 
         if (interaction.customId === 'confirm_clone') {
             if (!data) return interaction.reply({ content: '❌ Sessão expirada.', ephemeral: true });
-            await interaction.update({ content: '🚀 Clonagem em andamento... Você será avisado ao terminar.', embeds: [], components: [] });
+            await interaction.update({ content: '🚀 Clonagem iniciada...', embeds: [], components: [] });
             
             try {
                 const { sourceId, targetId, token, selections } = data;
                 let sourceGuild;
                 if (token) {
-                    const self = new SelfClient();
+                    const self = new SelfClient({ checkUpdate: false });
                     await self.login(token);
                     sourceGuild = await self.guilds.fetch(sourceId);
                     await executeClone(sourceGuild, client.guilds.cache.get(targetId), selections);
@@ -319,16 +336,17 @@ client.on('interactionCreate', async (interaction) => {
                     sourceGuild = await client.guilds.fetch(sourceId);
                     await executeClone(sourceGuild, client.guilds.cache.get(targetId), selections);
                 }
-                await interaction.followUp({ content: '✅ **Clonagem concluída com sucesso!**', ephemeral: true });
+                sendLog('📂 Clonagem Realizada', `**Usuário:** ${interaction.user.tag}\n**Origem:** ${sourceId}\n**Destino:** ${targetId}`, '#5865F2');
+                await interaction.followUp({ content: '✅ **Clonagem concluída!**', ephemeral: true });
             } catch (err) { 
-                await interaction.followUp({ content: '❌ Ocorreu um erro durante a clonagem.', ephemeral: true }); 
+                await interaction.followUp({ content: '❌ Erro na clonagem.', ephemeral: true }); 
             }
             delete globalCloneData[cloneKey];
         }
 
         if (interaction.customId === 'cancel_clone') {
             delete globalCloneData[cloneKey];
-            await interaction.update({ content: '❌ Operação cancelada.', embeds: [], components: [] });
+            await interaction.update({ content: '❌ Cancelado.', embeds: [], components: [] });
         }
     }
 });
